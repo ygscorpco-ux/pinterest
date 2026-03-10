@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Pinterest Picker</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <main class="app">
+      <section class="hero">
+        <div class="eyebrow">PERSONAL TOOL</div>
+        <h1 class="title">Pinterest 이미지 선택기</h1>
+        <p class="subtitle">메인 이미지와 주변 연관 이미지를 선택하고 PNG로 저장할 수 있게 돕는 개인용 확장프로그램입니다.</p>
+      </section>
+
+      <section class="card">
+        <div class="status" id="page-status">페이지 상태를 확인하는 중입니다.</div>
+        <div class="summary-grid">
+          <div class="summary-card">
+            <div class="summary-label">감지</div>
+            <div class="summary-value" id="detected-count">-</div>
+          </div>
+          <div class="summary-card">
+            <div class="summary-label">선택</div>
+            <div class="summary-value" id="selected-count">-</div>
+          </div>
+          <div class="summary-card">
+            <div class="summary-label">메인</div>
+            <div class="summary-value" id="main-found">-</div>
+          </div>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="section-title">빠른 실행</div>
+        <div class="button-grid">
+          <button class="button primary" id="activate-button" type="button">선택 모드 시작</button>
+          <button class="button" id="rescan-button" type="button">다시 스캔</button>
+          <button class="button" id="select-all-button" type="button">현재 화면 전체</button>
+          <button class="button" id="clear-button" type="button">선택 해제</button>
+          <button class="button danger" id="download-button" type="button">선택 다운로드</button>
+          <button class="button" id="retry-button" type="button">실패만 재시도</button>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="section-title">설정</div>
+        <label class="label">
+          저장 형식
+          <div class="fixed-value">PNG 고정</div>
+        </label>
+        <label class="label">
+          파일명 접두어
+          <input id="prefix-input" type="text" maxlength="50" placeholder="pinterest" />
+        </label>
+        <div class="hint">선택 모드 시작을 누르면 팝업은 자동으로 닫히고, 페이지 안의 작은 상태 바에서 이어서 조작할 수 있습니다.</div>
+      </section>
+
+      <section class="card">
+        <div class="section-title">다운로드 상태</div>
+        <div class="status muted" id="download-status">대기 중</div>
+      </section>
+    </main>
+
+    <script src="popup.js"></script>
+  </body>
+</html>
