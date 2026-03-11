@@ -3,8 +3,8 @@
   "name": "Pinterest Personal Downloader",
   "description": "Personal extension to select and download main and similar Pinterest images as PNG.",
   "version": "0.2.0",
-  "permissions": ["activeTab", "downloads", "scripting", "storage", "tabs"],
-  "host_permissions": ["https://www.pinterest.com/*", "https://*.pinimg.com/*"],
+  "permissions": ["activeTab", "downloads", "offscreen", "scripting", "storage", "tabs"],
+  "host_permissions": ["https://*.pinterest.com/*", "https://*.pinimg.com/*"],
   "icons": {
     "16": "assets/icons/icon16.png",
     "32": "assets/icons/icon32.png",

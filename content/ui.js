@@ -798,10 +798,10 @@
           return;
         }
 
-        clearTimeout(state.scrollTimer);
-        state.scrollTimer = window.setTimeout(() => {
-          runtime.scheduleRescan(0);
-        }, 180);
+        runtime.scheduleRescan(24, {
+          invalidateSources: true,
+          reason: 'scroll'
+        });
       },
       { passive: true }
     );
@@ -811,7 +811,10 @@
         return;
       }
 
-      runtime.scheduleRescan(140);
+      runtime.scheduleRescan(70, {
+        invalidateSources: true,
+        reason: 'resize'
+      });
     });
 
     window.addEventListener('popstate', () => {
@@ -819,7 +822,10 @@
         return;
       }
 
-      runtime.scheduleRescan(80);
+      runtime.scheduleRescan(50, {
+        invalidateSources: true,
+        reason: 'navigation'
+      });
     });
 
     window.addEventListener('hashchange', () => {
@@ -827,7 +833,10 @@
         return;
       }
 
-      runtime.scheduleRescan(80);
+      runtime.scheduleRescan(50, {
+        invalidateSources: true,
+        reason: 'navigation'
+      });
     });
 
     document.addEventListener(
@@ -838,7 +847,10 @@
         }
 
         if (event.target instanceof HTMLImageElement) {
-          runtime.scheduleRescan(120);
+          runtime.scheduleRescan(50, {
+            invalidateSources: true,
+            reason: 'load'
+          });
         }
       },
       true
@@ -885,7 +897,10 @@
           return;
         }
 
-        runtime.scheduleRescan(0);
+        runtime.scheduleRescan(0, {
+          invalidateSources: true,
+          reason: 'manual'
+        });
       },
       true
     );

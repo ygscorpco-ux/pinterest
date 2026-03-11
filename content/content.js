@@ -9,6 +9,16 @@
     filenamePrefix: 'pinterest'
   };
 
+  function createScanSourceCache() {
+    return {
+      dirty: true,
+      scopeKey: location.href,
+      images: [],
+      anchors: [],
+      lastPrunedAt: 0
+    };
+  }
+
   function createDownloadState() {
     return {
       status: 'idle',
@@ -53,9 +63,11 @@
       visibleAnchorMap: new Map(),
       selectedMap: new Map(),
       selectedOrder: [],
+      scanSourceCache: createScanSourceCache(),
       downloadState: createDownloadState(),
       observer: null,
       rescanTimer: 0,
+      rescanDueAt: 0,
       scrollTimer: 0,
       isRefreshing: false,
       needsRescan: false,
@@ -89,6 +101,7 @@
   };
 
   runtime.createDownloadState = createDownloadState;
+  runtime.createScanSourceCache = createScanSourceCache;
   runtime.getSettings = getSettings;
   runtime.normalizeSettings = normalizeSettings;
   runtime.getSnapshot = getSnapshot;

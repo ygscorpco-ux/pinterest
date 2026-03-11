@@ -6,6 +6,8 @@ const activeJobs = new Map();
 const jobHistory = new Map();
 const pinPageCandidatesCache = new Map();
 const PIN_PAGE_CACHE_LIMIT = 120;
+const OFFSCREEN_DOCUMENT_PATH = 'offscreen/download.html';
+let offscreenDocumentPromise = null;
 
 chrome.runtime.onInstalled.addListener(async () => {
   const settings = await getSettings();
@@ -499,20 +501,98 @@ async function ensurePngBlob(blob) {
 }
 
 async function downloadBlob(blob, filename) {
-  const objectUrl = URL.createObjectURL(blob);
+  if (typeof URL.createObjectURL === 'function') {
+    const objectUrl = URL.createObjectURL(blob);
+
+    try {
+      await chrome.downloads.download({
+        url: objectUrl,
+        filename,
+        saveAs: false,
+        conflictAction: 'uniquify'
+      });
+      return;
+    } finally {
+      // Delay revocation slightly so the download manager can consume the blob URL.
+      setTimeout(() => {
+        URL.revokeObjectURL(objectUrl);
+      }, 30_000);
+    }
+  }
+
+  await ensureOffscreenDocument();
+  const response = await chrome.runtime.sendMessage({
+    type: 'OFFSCREEN_CREATE_OBJECT_URL',
+    payload: {
+      buffer: await blob.arrayBuffer(),
+      mimeType: blob.type || 'application/octet-stream'
+    }
+  });
+
+  if (!response?.ok || !response.objectUrl) {
+    throw new Error(response?.error || 'Offscreen blob URL creation failed.');
+  }
 
   try {
     await chrome.downloads.download({
-      url: objectUrl,
+      url: response.objectUrl,
       filename,
       saveAs: false,
       conflictAction: 'uniquify'
     });
   } finally {
-    // Delay revocation slightly so the download manager can consume the blob URL.
     setTimeout(() => {
-      URL.revokeObjectURL(objectUrl);
+      chrome.runtime.sendMessage({
+        type: 'OFFSCREEN_REVOKE_OBJECT_URL',
+        payload: {
+          objectUrl: response.objectUrl
+        }
+      }).catch(() => undefined);
     }, 30_000);
+  }
+}
+
+async function ensureOffscreenDocument() {
+  if (!chrome.offscreen?.createDocument) {
+    throw new Error('Offscreen documents are not supported in this browser.');
+  }
+
+  if (offscreenDocumentPromise) {
+    return offscreenDocumentPromise;
+  }
+
+  offscreenDocumentPromise = (async () => {
+    const offscreenUrl = chrome.runtime.getURL(OFFSCREEN_DOCUMENT_PATH);
+
+    if (chrome.runtime.getContexts) {
+      const existingContexts = await chrome.runtime.getContexts({
+        contextTypes: ['OFFSCREEN_DOCUMENT'],
+        documentUrls: [offscreenUrl]
+      });
+
+      if (existingContexts.length > 0) {
+        return;
+      }
+    }
+
+    try {
+      await chrome.offscreen.createDocument({
+        url: OFFSCREEN_DOCUMENT_PATH,
+        reasons: ['BLOBS'],
+        justification: 'Create blob URLs for downloads from the extension service worker.'
+      });
+    } catch (error) {
+      const message = error?.message || '';
+      if (!message.includes('Only a single offscreen document')) {
+        throw error;
+      }
+    }
+  })();
+
+  try {
+    await offscreenDocumentPromise;
+  } finally {
+    offscreenDocumentPromise = null;
   }
 }
 

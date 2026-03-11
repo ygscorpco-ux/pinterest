@@ -39,6 +39,7 @@
     }
 
     state.lastScope = scope;
+    runtime.invalidateScanSourceCache();
     await runtime.refreshScan({ autoSelectMain: state.selectedOrder.length === 0 });
     runtime.startObserver();
     runtime.renderAll();

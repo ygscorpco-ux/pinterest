@@ -6,6 +6,10 @@
 
   runtime.modules.scan = true;
 
+  const FAST_SCAN_MARGIN = 260;
+  const FAST_SCAN_IMAGE_LIMIT = 80;
+  const FAST_SCAN_ANCHOR_LIMIT = 64;
+
   const {
     state,
     ui,
@@ -23,9 +27,13 @@
   runtime.startObserver = startObserver;
   runtime.stopObserver = stopObserver;
   runtime.scheduleRescan = scheduleRescan;
+  runtime.invalidateScanSourceCache = invalidateScanSourceCache;
+  runtime.getScanSourceCache = getScanSourceCache;
   runtime.syncVisibleState = syncVisibleState;
   runtime.replaceVisibleItems = replaceVisibleItems;
   runtime.collectCandidates = collectCandidates;
+  runtime.collectImageCandidates = collectImageCandidates;
+  runtime.buildImageCandidate = buildImageCandidate;
   runtime.collectAnchorFallbackCandidates = collectAnchorFallbackCandidates;
   runtime.buildFallbackCandidateFromAnchor = buildFallbackCandidateFromAnchor;
   runtime.findBestMediaForAnchor = findBestMediaForAnchor;
@@ -69,7 +77,14 @@
         state.lastScope = scope;
       }
 
-      const candidates = collectCandidates();
+      if (state.lastUrl !== location.href) {
+        invalidateScanSourceCache();
+      }
+
+      const candidates = collectCandidates({
+        fastMode: shouldUseFastScan(options?.reason),
+        reason: options?.reason || 'default'
+      });
       const mainCandidate = pickMainCandidate(candidates);
       const similarCandidates = pickSimilarCandidates(candidates, mainCandidate);
       const nextItems = [];
@@ -100,7 +115,7 @@
       state.isRefreshing = false;
       if (state.needsRescan) {
         state.needsRescan = false;
-        scheduleRescan(60);
+        scheduleRescan(40, { reason: 'followup' });
       }
     }
   }
@@ -120,11 +135,14 @@
       }
 
       if (location.href !== state.lastUrl) {
-        scheduleRescan(120);
+        scheduleRescan(60, { invalidateSources: true, reason: 'navigation' });
         return;
       }
 
-      scheduleRescan(mutations.length > 24 ? 260 : 220);
+      scheduleRescan(mutations.length > 24 ? 180 : 120, {
+        invalidateSources: true,
+        reason: 'mutation'
+      });
     });
 
     state.observer.observe(document.body, {
@@ -143,17 +161,59 @@
 
     clearTimeout(state.rescanTimer);
     clearTimeout(state.scrollTimer);
+    state.rescanDueAt = 0;
   }
 
-  function scheduleRescan(delay) {
-    clearTimeout(state.rescanTimer);
+  function scheduleRescan(delay, options) {
+    if (options?.invalidateSources) {
+      invalidateScanSourceCache();
+    }
+
+    const reason = options?.reason || 'default';
+    const minimumGap = getMinimumRescanGap(reason);
     const elapsed = Date.now() - state.lastScanAt;
-    const wait = Math.max(delay, elapsed < 220 ? 220 - elapsed : 0);
+    const wait = Math.max(delay, elapsed < minimumGap ? minimumGap - elapsed : 0);
+    const dueAt = Date.now() + wait;
+
+    if (state.rescanDueAt && state.rescanDueAt <= dueAt) {
+      return;
+    }
+
+    clearTimeout(state.rescanTimer);
+    state.rescanDueAt = dueAt;
     state.rescanTimer = window.setTimeout(() => {
-      refreshScan({ autoSelectMain: false }).catch((error) => {
+      state.rescanDueAt = 0;
+      refreshScan({
+        autoSelectMain: false,
+        reason
+      }).catch((error) => {
         console.error('[PPD] Failed to rescan images.', error);
       });
     }, wait);
+  }
+
+  function shouldUseFastScan(reason) {
+    return reason === 'scroll' || reason === 'resize';
+  }
+
+  function getMinimumRescanGap(reason) {
+    if (reason === 'scroll') {
+      return 90;
+    }
+
+    if (reason === 'load' || reason === 'navigation' || reason === 'manual') {
+      return 70;
+    }
+
+    if (reason === 'resize' || reason === 'followup') {
+      return 110;
+    }
+
+    if (reason === 'mutation') {
+      return 130;
+    }
+
+    return 150;
   }
 
   function syncVisibleState(items) {
@@ -181,91 +241,181 @@
     state.lastUrl = location.href;
   }
 
-  function collectCandidates() {
-    const candidates = [];
-    const seenSelectionKeys = new Set();
+  function invalidateScanSourceCache() {
+    const cache = state.scanSourceCache || (state.scanSourceCache = runtime.createScanSourceCache());
+    cache.dirty = true;
+    cache.scopeKey = location.href;
+  }
 
-    for (const image of Array.from(document.images)) {
-      if (!(image instanceof HTMLImageElement)) {
-        continue;
-      }
+  function getScanSourceCache() {
+    const cache = state.scanSourceCache || (state.scanSourceCache = runtime.createScanSourceCache());
 
-      if (!image.isConnected || image.closest(`#${SHADOW_HOST_ID}`)) {
-        continue;
-      }
-
-      const imageRect = image.getBoundingClientRect();
-      const imageArea = imageRect.width * imageRect.height;
-      if (
-        !runtime.isRectVisible(imageRect) ||
-        Math.max(imageRect.width, imageRect.height) < 96 ||
-        Math.min(imageRect.width, imageRect.height) < 56 ||
-        imageArea < 8000
-      ) {
-        continue;
-      }
-
-      if (
-        Math.max(image.naturalWidth, image.naturalHeight) < 140 ||
-        image.naturalWidth * image.naturalHeight < 14000
-      ) {
-        continue;
-      }
-
-      const imageUrl = getBestSource(image);
-      if (!imageUrl) {
-        continue;
-      }
-
-      const container = getSelectableContainer(image);
-      if (!(container instanceof HTMLElement)) {
-        continue;
-      }
-
-      const containerRect = container.getBoundingClientRect();
-      if (
-        !runtime.isRectVisible(containerRect) ||
-        Math.max(containerRect.width, containerRect.height) < 96 ||
-        Math.min(containerRect.width, containerRect.height) < 56
-      ) {
-        continue;
-      }
-
-      const pinUrl = getPinUrlForImage(image, imageRect);
-      const normalizedImageUrl = runtime.normalizeUrl(imageUrl);
-      if (!normalizedImageUrl) {
-        continue;
-      }
-
-      const pinKey = runtime.getPinKey(pinUrl);
-      const selectionKey = runtime.getSelectionKey(pinUrl, normalizedImageUrl);
-      seenSelectionKeys.add(selectionKey);
-      candidates.push({
-        anchor: image.closest('a[href*="/pin/"]'),
-        image,
-        container,
-        imageRect,
-        containerRect,
-        imageArea,
-        containerArea: containerRect.width * containerRect.height,
-        imageUrl: normalizedImageUrl,
-        thumbnailUrl: runtime.normalizeUrl(image.currentSrc || image.src || normalizedImageUrl),
-        pinUrl,
-        pinKey,
-        selectionKey,
-        label: getCandidateLabel(image, container, pinKey)
-      });
+    if (cache.dirty || cache.scopeKey !== location.href) {
+      rebuildScanSourceCache(cache);
+      return cache;
     }
 
-    candidates.push(...collectAnchorFallbackCandidates(seenSelectionKeys));
+    if (Date.now() - cache.lastPrunedAt > 1400) {
+      pruneScanSourceCache(cache);
+    }
+
+    return cache;
+  }
+
+  function rebuildScanSourceCache(cache) {
+    cache.images = [];
+    for (const image of document.images) {
+      if (image instanceof HTMLImageElement && !image.closest(`#${SHADOW_HOST_ID}`)) {
+        cache.images.push(image);
+      }
+    }
+
+    cache.anchors = [];
+    for (const anchor of document.querySelectorAll('a[href*="/pin/"]')) {
+      if (anchor instanceof HTMLAnchorElement && !anchor.closest(`#${SHADOW_HOST_ID}`)) {
+        cache.anchors.push(anchor);
+      }
+    }
+
+    cache.dirty = false;
+    cache.scopeKey = location.href;
+    cache.lastPrunedAt = Date.now();
+  }
+
+  function pruneScanSourceCache(cache) {
+    cache.images = cache.images.filter(
+      (image) => image instanceof HTMLImageElement && image.isConnected && !image.closest(`#${SHADOW_HOST_ID}`)
+    );
+    cache.anchors = cache.anchors.filter(
+      (anchor) => anchor instanceof HTMLAnchorElement && anchor.isConnected && !anchor.closest(`#${SHADOW_HOST_ID}`)
+    );
+    cache.lastPrunedAt = Date.now();
+  }
+
+  function collectCandidates(options) {
+    const candidates = collectImageCandidates(options);
+    const seenSelectionKeys = new Set(candidates.map((candidate) => candidate.selectionKey));
+
+    if (shouldCollectAnchorFallbackCandidates(candidates, options)) {
+      candidates.push(...collectAnchorFallbackCandidates(seenSelectionKeys, options));
+    }
 
     return dedupeCandidates(candidates);
   }
 
-  function collectAnchorFallbackCandidates(seenSelectionKeys) {
+  function shouldCollectAnchorFallbackCandidates(imageCandidates, options) {
+    if (!options?.fastMode) {
+      return true;
+    }
+
+    if (/\/pin\//i.test(location.pathname)) {
+      return true;
+    }
+
+    return imageCandidates.length < 8;
+  }
+
+  function collectImageCandidates(options) {
+    const candidates = [];
+    const seenSelectionKeys = new Set();
+    const images = getCandidateSourceImages(options);
+
+    for (const image of images) {
+      const candidate = buildImageCandidate(image, seenSelectionKeys);
+      if (candidate) {
+        candidates.push(candidate);
+      }
+    }
+
+    return candidates;
+  }
+
+  function getCandidateSourceImages(options) {
+    const { images } = getScanSourceCache();
+    if (!options?.fastMode) {
+      return images;
+    }
+
+    return filterNodesNearViewport(images, FAST_SCAN_MARGIN, FAST_SCAN_IMAGE_LIMIT);
+  }
+
+  function buildImageCandidate(image, seenSelectionKeys) {
+    if (!(image instanceof HTMLImageElement) || !image.isConnected || image.closest(`#${SHADOW_HOST_ID}`)) {
+      return null;
+    }
+
+    const imageRect = image.getBoundingClientRect();
+    const imageArea = imageRect.width * imageRect.height;
+    if (
+      !runtime.isRectVisible(imageRect) ||
+      Math.max(imageRect.width, imageRect.height) < 96 ||
+      Math.min(imageRect.width, imageRect.height) < 56 ||
+      imageArea < 8000
+    ) {
+      return null;
+    }
+
+    if (
+      Math.max(image.naturalWidth, image.naturalHeight) < 140 ||
+      image.naturalWidth * image.naturalHeight < 14000
+    ) {
+      return null;
+    }
+
+    const imageUrl = getBestSource(image);
+    if (!imageUrl) {
+      return null;
+    }
+
+    const container = getSelectableContainer(image);
+    if (!(container instanceof HTMLElement)) {
+      return null;
+    }
+
+    const containerRect = container.getBoundingClientRect();
+    if (
+      !runtime.isRectVisible(containerRect) ||
+      Math.max(containerRect.width, containerRect.height) < 96 ||
+      Math.min(containerRect.width, containerRect.height) < 56
+    ) {
+      return null;
+    }
+
+    const pinUrl = getPinUrlForImage(image, imageRect);
+    const normalizedImageUrl = runtime.normalizeUrl(imageUrl);
+    if (!normalizedImageUrl) {
+      return null;
+    }
+
+    const pinKey = runtime.getPinKey(pinUrl);
+    const selectionKey = runtime.getSelectionKey(pinUrl, normalizedImageUrl);
+    if (seenSelectionKeys?.has(selectionKey)) {
+      return null;
+    }
+
+    seenSelectionKeys?.add(selectionKey);
+    return {
+      anchor: image.closest('a[href*="/pin/"]'),
+      image,
+      container,
+      imageRect,
+      containerRect,
+      imageArea,
+      containerArea: containerRect.width * containerRect.height,
+      imageUrl: normalizedImageUrl,
+      thumbnailUrl: runtime.normalizeUrl(image.currentSrc || image.src || normalizedImageUrl),
+      pinUrl,
+      pinKey,
+      selectionKey,
+      label: getCandidateLabel(image, container, pinKey)
+    };
+  }
+
+  function collectAnchorFallbackCandidates(seenSelectionKeys, options) {
     const candidates = [];
 
-    for (const anchor of Array.from(document.querySelectorAll('a[href*="/pin/"]'))) {
+    const anchors = getCandidateSourceAnchors(options);
+    for (const anchor of anchors) {
       const candidate = buildFallbackCandidateFromAnchor(anchor, seenSelectionKeys);
       if (!candidate) {
         continue;
@@ -276,6 +426,48 @@
     }
 
     return candidates;
+  }
+
+  function getCandidateSourceAnchors(options) {
+    const { anchors } = getScanSourceCache();
+    if (!options?.fastMode) {
+      return anchors;
+    }
+
+    return filterNodesNearViewport(anchors, FAST_SCAN_MARGIN, FAST_SCAN_ANCHOR_LIMIT);
+  }
+
+  function filterNodesNearViewport(nodes, margin, limit) {
+    const result = [];
+
+    for (const node of nodes) {
+      if (!(node instanceof Element) || !node.isConnected) {
+        continue;
+      }
+
+      const rect = node.getBoundingClientRect();
+      if (!isRectNearViewport(rect, margin)) {
+        continue;
+      }
+
+      result.push(node);
+      if (result.length >= limit) {
+        break;
+      }
+    }
+
+    return result;
+  }
+
+  function isRectNearViewport(rect, margin) {
+    return (
+      rect.width > 0 &&
+      rect.height > 0 &&
+      rect.bottom >= -margin &&
+      rect.right >= -margin &&
+      rect.top <= window.innerHeight + margin &&
+      rect.left <= window.innerWidth + margin
+    );
   }
 
   function buildFallbackCandidateFromAnchor(anchor, seenSelectionKeys) {
